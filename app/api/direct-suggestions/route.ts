@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DirectDomainItem, DirectSuggestionsRequest, GoDaddySuggestionRaw } from "@/lib/types";
+import { getFallbackDirectSuggestions } from "@/lib/mock-data";
 
 function formatUsd(cents?: number): string | undefined {
   if (cents === undefined || cents === null) return undefined;
@@ -7,9 +8,10 @@ function formatUsd(cents?: number): string | undefined {
 }
 
 export async function POST(req: NextRequest) {
+  let query = "";
   try {
     const body = (await req.json()) as DirectSuggestionsRequest;
-    const query = body?.query?.trim();
+    query = body?.query?.trim() || "";
 
     if (!query) {
       return NextResponse.json(
@@ -18,12 +20,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Explicit mock mode request
+    if (body.mock) {
+      const items = getFallbackDirectSuggestions(query);
+      return NextResponse.json({ items, fallback: true });
+    }
+
     const pat = process.env.GODADDY_PAT;
     if (!pat) {
-      return NextResponse.json(
-        { error: "GODADDY_PAT environment variable is not configured", items: [] },
-        { status: 500 }
-      );
+      console.warn("GODADDY_PAT missing. Using fallback mock dataset.");
+      const items = getFallbackDirectSuggestions(query);
+      return NextResponse.json({ items, fallback: true });
     }
 
     // Prefer GODADDY_API_BASE, with automatic production fallback if test/OTE fails
@@ -34,29 +41,35 @@ export async function POST(req: NextRequest) {
 
     const endpoint = `${apiBase}/v3/domains/suggestions?query=${encodeURIComponent(query)}&pageSize=6`;
 
+    // Add 6-second timeout controller so an unresponsive API call doesn't hang the demo
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+
     const res = await fetch(endpoint, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${pat}`,
         Accept: "application/json",
       },
+      signal: controller.signal,
       cache: "no-store",
     });
+    clearTimeout(timeoutId);
 
     if (!res.ok) {
       const errorText = await res.text();
-      console.error("GoDaddy Suggestions API error:", res.status, errorText);
-      return NextResponse.json(
-        {
-          error: `GoDaddy Suggestions API returned status ${res.status}: ${errorText.slice(0, 120)}`,
-          items: [],
-        },
-        { status: res.status }
-      );
+      console.warn("GoDaddy API returned non-OK status. Activating fallback mock data:", res.status, errorText);
+      const items = getFallbackDirectSuggestions(query);
+      return NextResponse.json({ items, fallback: true });
     }
 
     const data = await res.json();
     const rawItems: GoDaddySuggestionRaw[] = data.items || [];
+
+    if (rawItems.length === 0) {
+      const items = getFallbackDirectSuggestions(query);
+      return NextResponse.json({ items, fallback: true });
+    }
 
     // Map to normalized DirectDomainItem keeping raw fields intact
     const items: DirectDomainItem[] = rawItems.map((item) => {
@@ -77,15 +90,10 @@ export async function POST(req: NextRequest) {
       };
     });
 
-    return NextResponse.json({ items });
+    return NextResponse.json({ items, fallback: false });
   } catch (error: any) {
-    console.error("Error in direct-suggestions route:", error);
-    return NextResponse.json(
-      {
-        error: error?.message || "Failed to fetch direct suggestions",
-        items: [],
-      },
-      { status: 500 }
-    );
+    console.warn("Error or timeout in direct-suggestions route. Activating resilient fallback:", error?.message);
+    const items = getFallbackDirectSuggestions(query || "business");
+    return NextResponse.json({ items, fallback: true });
   }
 }

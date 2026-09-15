@@ -61,6 +61,24 @@ export const HIGH_RISK_TLDS = [
   ".cc",
 ];
 
+// Trusted commercial modifiers that signify legitimate business operations
+export const TRUSTED_MODIFIERS = [
+  "services",
+  "group",
+  "solutions",
+  "hub",
+  "advisors",
+  "capital",
+  "partners",
+  "holdings",
+  "finance",
+  "official",
+  "credit",
+  "lending",
+  "center",
+  "desk",
+];
+
 /**
  * Standard Levenshtein distance between two strings
  */
@@ -79,9 +97,9 @@ export function levenshtein(a: string, b: string): number {
     for (let j = 1; j <= bn; j++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
       matrix[i][j] = Math.min(
-        matrix[i - 1][j] + 1, // deletion
-        matrix[i][j - 1] + 1, // insertion
-        matrix[i - 1][j - 1] + cost // substitution
+        matrix[i - 1][j] + 1,
+        matrix[i][j - 1] + 1,
+        matrix[i - 1][j - 1] + cost
       );
     }
   }
@@ -105,24 +123,28 @@ export function getDomainBase(domain: string): { base: string; tld: string } {
 /**
  * Deterministic Risk Score evaluator
  * Checks:
- * 1. Urgency / scam keyword presence without brand tokens
+ * 1. Urgency / scam keyword presence without legitimate brand or commercial structure
  * 2. Levenshtein typosquatting against known major brands
  * 3. TLD risk weighting
  */
 export function calculateRisk(
   domain: string,
-  brandName: string
+  brandName: string = ""
 ): { riskLevel: RiskLevel; reasons: string[] } {
   const reasons: string[] = [];
   const { base, tld } = getDomainBase(domain);
   const cleanBase = base.replace(/[^a-z0-9]/g, "");
 
+  const cleanBrand = brandName.toLowerCase().trim();
+  const hasBrand = cleanBrand.length >= 2;
+
   // Brand tokenization
-  const brandTokens = brandName
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .split(/\s+/)
-    .filter((t) => t.length >= 3);
+  const brandTokens = hasBrand
+    ? cleanBrand
+        .replace(/[^a-z0-9\s]/g, "")
+        .split(/\s+/)
+        .filter((t) => t.length >= 3)
+    : [];
 
   const containsBrandToken = brandTokens.some(
     (token) => cleanBase.includes(token) || levenshtein(cleanBase, token) <= 1
@@ -132,7 +154,6 @@ export function calculateRisk(
 
   // 1. Typosquatting Check: Levenshtein distance against famous brands
   for (const brand of WELL_KNOWN_BRANDS) {
-    // If exact match or edit distance is 1 or 2 on words of sufficient length
     const dist = levenshtein(cleanBase, brand);
     if (dist > 0 && dist <= 2 && Math.abs(cleanBase.length - brand.length) <= 2) {
       riskScore += 3;
@@ -146,14 +167,21 @@ export function calculateRisk(
     cleanBase.includes(word)
   );
 
-  if (matchedScamWords.length >= 2 && !containsBrandToken) {
-    riskScore += 2;
-    reasons.push(
-      `Multiple generic urgency/lending keywords (${matchedScamWords.join(", ")}) without brand identity`
-    );
-  } else if (matchedScamWords.length === 1 && !containsBrandToken) {
-    riskScore += 1;
-    reasons.push(`Generic commercial keyword (${matchedScamWords[0]}) with no brand identity`);
+  const containsTrustedModifier = TRUSTED_MODIFIERS.some((mod) =>
+    cleanBase.includes(mod)
+  );
+
+  // If no brand is specified, domains combining urgency words with cheap TLDs are high risk
+  if (!containsBrandToken) {
+    if (matchedScamWords.length >= 2) {
+      riskScore += 2;
+      reasons.push(
+        `Multiple urgency/predatory keywords (${matchedScamWords.join(", ")}) without established branding`
+      );
+    } else if (matchedScamWords.length === 1 && !containsTrustedModifier) {
+      riskScore += 1;
+      reasons.push(`Generic commercial keyword (${matchedScamWords[0]}) with unverified structure`);
+    }
   }
 
   // 3. TLD Risk Weighting
@@ -163,9 +191,12 @@ export function calculateRisk(
     reasons.push(`High-abuse/cheap TLD extension (${tld})`);
   }
 
-  // If brand is strongly represented and not typosquatting, mitigate score
+  // If brand is present and no typosquatting, mitigate score
   if (containsBrandToken && riskScore < 3) {
     riskScore = Math.max(0, riskScore - 1);
+  } else if (!hasBrand && containsTrustedModifier && riskScore === 1 && !isHighRiskTLD) {
+    // Legitimate commercial modifier on safe TLD mitigates low-level keyword risk
+    riskScore = 0;
   }
 
   let riskLevel: RiskLevel = "Low";
@@ -183,28 +214,72 @@ export function calculateRisk(
 }
 
 /**
- * Heuristic relevance scoring (fallback or baseline)
- * Scores 0 - 100 based on brand overlap and business query match
+ * Relevance scoring:
+ * Supports BOTH brand-driven scoring AND query-only category scoring
  */
 export function calculateHeuristicRelevance(
   domain: string,
-  brandName: string,
-  intentQuery: string
+  brandName: string = "",
+  intentQuery: string = ""
 ): { score: number; reason: string } {
-  const { base } = getDomainBase(domain);
+  const { base, tld } = getDomainBase(domain);
   const cleanBase = base.replace(/[^a-z0-9]/g, "").toLowerCase();
 
-  const brandTokens = brandName
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .split(/\s+/)
-    .filter((t) => t.length >= 2);
+  const cleanBrand = brandName.toLowerCase().trim();
+  const hasBrand = cleanBrand.length >= 2;
 
   const intentTokens = intentQuery
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, "")
     .split(/\s+/)
     .filter((t) => t.length >= 3 && !["want", "open", "need", "build", "like"].includes(t));
+
+  // CASE 1: Query-Only Mode (No Brand Provided)
+  if (!hasBrand) {
+    let intentMatchScore = 0;
+    let matchesCount = 0;
+    for (const token of intentTokens) {
+      if (cleanBase.includes(token)) {
+        matchesCount++;
+        intentMatchScore += Math.min(40, token.length * 9);
+      }
+    }
+
+    const hasTrustedModifier = TRUSTED_MODIFIERS.some((mod) => cleanBase.includes(mod));
+    if (hasTrustedModifier) {
+      intentMatchScore += 25;
+    }
+
+    // Penalize clumsy sentence domains like "iwanttoopenagoldloanbusiness"
+    const isClumsySentence = cleanBase.includes("iwant") || cleanBase.includes("opena") || cleanBase.length > 24;
+    if (isClumsySentence) {
+      intentMatchScore = Math.max(20, intentMatchScore - 30);
+    }
+
+    // Penalize high-risk TLDs
+    if (HIGH_RISK_TLDS.some((ext) => tld.endsWith(ext))) {
+      intentMatchScore = Math.max(15, intentMatchScore - 25);
+    }
+
+    const finalScore = Math.min(95, Math.max(20, Math.round(intentMatchScore)));
+
+    let reason = "";
+    if (finalScore >= 80) {
+      reason = "Professional commercial match for category intent with clean structure";
+    } else if (finalScore >= 50) {
+      reason = "Partial intent match with standard commercial structure";
+    } else {
+      reason = "Unfiltered raw query suggestion with low category credibility";
+    }
+
+    return { score: finalScore, reason };
+  }
+
+  // CASE 2: Brand + Query Mode
+  const brandTokens = cleanBrand
+    .replace(/[^a-z0-9\s]/g, "")
+    .split(/\s+/)
+    .filter((t) => t.length >= 2);
 
   let brandMatchScore = 0;
   let brandMatches = 0;
@@ -226,17 +301,14 @@ export function calculateHeuristicRelevance(
 
   let totalScore = Math.min(100, Math.round(brandMatchScore * 0.65 + intentMatchScore * 0.35));
 
-  // If both brand and intent match, bonus
   if (brandMatches > 0 && intentMatches > 0) {
     totalScore = Math.min(100, totalScore + 15);
   }
 
-  // If no brand match at all, cap at 45
   if (brandMatches === 0) {
     totalScore = Math.min(45, totalScore);
   }
 
-  // Floor at 15
   totalScore = Math.max(15, totalScore);
 
   let reason = "";

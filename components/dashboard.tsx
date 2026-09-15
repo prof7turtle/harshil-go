@@ -21,10 +21,8 @@ import {
   ShieldCheck,
   AlertTriangle,
   CheckCircle2,
-  XCircle,
-  ExternalLink,
   Info,
-  ArrowRight,
+  ShieldAlert,
 } from "lucide-react";
 
 interface ToastMessage {
@@ -36,7 +34,12 @@ const PRESET_EXAMPLES = [
   {
     brand: "SwarnaSeva Finance",
     query: "I want to open a Gold loan business",
-    label: "Gold Loan (SwarnaSeva)",
+    label: "Brand + Intent (SwarnaSeva)",
+  },
+  {
+    brand: "",
+    query: "I want to open a Gold loan business",
+    label: "No Brand: Pure Intent (Scam Filter Demo)",
   },
   {
     brand: "ChaiCraft Artisan",
@@ -53,11 +56,16 @@ const PRESET_EXAMPLES = [
 export function Dashboard() {
   const [brand, setBrand] = useState("SwarnaSeva Finance");
   const [query, setQuery] = useState("I want to open a Gold loan business");
+  const [useMock, setUseMock] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const [directItems, setDirectItems] = useState<DirectDomainItem[] | null>(null);
   const [contextItems, setContextItems] = useState<ContextDomainItem[] | null>(null);
   const [enrichedPhrases, setEnrichedPhrases] = useState<string[]>([]);
+  const [highRiskFilteredCount, setHighRiskFilteredCount] = useState<number>(0);
+
+  const [directIsFallback, setDirectIsFallback] = useState(false);
+  const [contextIsFallback, setContextIsFallback] = useState(false);
 
   const [directError, setDirectError] = useState<string | null>(null);
   const [contextError, setContextError] = useState<string | null>(null);
@@ -74,7 +82,7 @@ export function Dashboard() {
 
   const handleCompare = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!brand.trim() || !query.trim()) return;
+    if (!query.trim()) return;
 
     setLoading(true);
     setDirectError(null);
@@ -82,38 +90,46 @@ export function Dashboard() {
     setDirectItems(null);
     setContextItems(null);
     setEnrichedPhrases([]);
+    setHighRiskFilteredCount(0);
+    setDirectIsFallback(false);
+    setContextIsFallback(false);
 
     try {
       const [directRes, contextRes] = await Promise.all([
         fetch("/api/direct-suggestions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: query.trim() }),
+          body: JSON.stringify({ query: query.trim(), mock: useMock }),
         }),
         fetch("/api/context-suggestions", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ brand: brand.trim(), query: query.trim() }),
+          body: JSON.stringify({ brand: brand.trim(), query: query.trim(), mock: useMock }),
         }),
       ]);
 
       // Direct suggestions handling
       const directJson = await directRes.json();
-      if (!directRes.ok || directJson.error) {
+      if (!directRes.ok && !directJson.items) {
         setDirectError(directJson.error || "Failed to load direct suggestions");
       } else {
         setDirectItems(directJson.items || []);
+        if (directJson.fallback) setDirectIsFallback(true);
       }
 
       // Context suggestions handling
       const contextJson = await contextRes.json();
-      if (!contextRes.ok || contextJson.error) {
+      if (!contextRes.ok && !contextJson.items) {
         setContextError(contextJson.error || "Failed to load context recommendations");
       } else {
         setContextItems(contextJson.items || []);
         if (contextJson.enrichedPhrases) {
           setEnrichedPhrases(contextJson.enrichedPhrases);
         }
+        if (typeof contextJson.highRiskFilteredCount === "number") {
+          setHighRiskFilteredCount(contextJson.highRiskFilteredCount);
+        }
+        if (contextJson.fallback) setContextIsFallback(true);
       }
     } catch (err: any) {
       setDirectError("Network error contacting API route");
@@ -159,15 +175,26 @@ export function Dashboard() {
             </div>
             <div>
               <h1 className="text-base sm:text-lg font-semibold tracking-tight text-neutral-900 flex items-center gap-2">
-                Domain Intelligence Layer
-                <span className="text-xs font-normal text-neutral-500 hidden sm:inline">
-                  — Context-Aware Suggestions
-                </span>
+                Domain Intelligence Layer: Context-Aware Suggestions
               </h1>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge variant="muted" className="text-neutral-600 bg-neutral-100/80">
+          <div className="flex items-center gap-3">
+            {/* Demo / Mock mode toggle */}
+            <button
+              type="button"
+              onClick={() => setUseMock(!useMock)}
+              className={`text-xs px-2.5 py-1 rounded-md border flex items-center gap-1.5 transition-colors cursor-pointer ${
+                useMock
+                  ? "bg-amber-50 border-amber-200 text-amber-800 font-medium"
+                  : "bg-neutral-50 border-neutral-200 text-neutral-600 hover:bg-neutral-100"
+              }`}
+              title="Toggle between Live GoDaddy/Gemini APIs and Stage-Safe Fallback Dataset"
+            >
+              <span className={`w-2 h-2 rounded-full ${useMock ? "bg-amber-500" : "bg-emerald-500"}`} />
+              <span>{useMock ? "Mock Fallback: Active" : "Live API Mode"}</span>
+            </button>
+            <Badge variant="muted" className="text-neutral-600 bg-neutral-100/80 hidden sm:inline-flex">
               GoDaddy Airo Prototype
             </Badge>
           </div>
@@ -185,7 +212,7 @@ export function Dashboard() {
                 The Disconnected Search Widget Problem
               </p>
               Traditional domain widgets take raw keyword queries and return generic, low-relevance, or scam-pattern domains.
-              This prototype injects brand context via Gemini, then runs candidates through a deterministic risk + relevance scoring layer before fetching live GoDaddy availability.
+              This prototype injects brand context or category intent via Gemini, then runs candidates through a deterministic risk and relevance scoring layer to eliminate high-risk domains before fetching live GoDaddy availability.
             </div>
           </div>
         </div>
@@ -195,19 +222,23 @@ export function Dashboard() {
           <form onSubmit={handleCompare} className="flex flex-col gap-5">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
-                <label
-                  htmlFor="brand-name-input"
-                  className="text-xs font-semibold text-neutral-700 uppercase tracking-wider"
-                >
-                  Business name / brand
-                </label>
+                <div className="flex items-center justify-between">
+                  <label
+                    htmlFor="brand-name-input"
+                    className="text-xs font-semibold text-neutral-700 uppercase tracking-wider"
+                  >
+                    Business name / brand
+                  </label>
+                  <span className="text-[11px] text-neutral-400 font-normal">
+                    Optional (leave blank to test pure intent)
+                  </span>
+                </div>
                 <Input
                   id="brand-name-input"
                   value={brand}
                   onChange={(e) => setBrand(e.target.value)}
-                  placeholder="e.g. SwarnaSeva Finance"
+                  placeholder="e.g. SwarnaSeva Finance (optional)"
                   className="font-medium text-neutral-900"
-                  required
                 />
               </div>
 
@@ -216,7 +247,7 @@ export function Dashboard() {
                   htmlFor="query-input"
                   className="text-xs font-semibold text-neutral-700 uppercase tracking-wider"
                 >
-                  What do you want to build?
+                  What do you want to build? <span className="text-red-500">*</span>
                 </label>
                 <Input
                   id="query-input"
@@ -241,7 +272,11 @@ export function Dashboard() {
                       setBrand(preset.brand);
                       setQuery(preset.query);
                     }}
-                    className="px-2.5 py-1 rounded-md bg-neutral-100 hover:bg-neutral-200 text-neutral-700 transition-colors font-medium text-xs cursor-pointer"
+                    className={`px-2.5 py-1 rounded-md transition-colors font-medium text-xs cursor-pointer border ${
+                      brand === preset.brand && query === preset.query
+                        ? "bg-neutral-900 text-white border-neutral-900"
+                        : "bg-neutral-100 hover:bg-neutral-200 text-neutral-700 border-neutral-200/80"
+                    }`}
                   >
                     {preset.label}
                   </button>
@@ -251,7 +286,7 @@ export function Dashboard() {
               <Button
                 id="compare-btn"
                 type="submit"
-                disabled={loading || !brand.trim() || !query.trim()}
+                disabled={loading || !query.trim()}
                 className="w-full sm:w-auto px-6 h-10 font-medium flex items-center gap-2 cursor-pointer"
               >
                 {loading ? (
@@ -273,18 +308,25 @@ export function Dashboard() {
         {/* Comparison Grid: Two Columns */}
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
           {/* LEFT CARD: Direct GoDaddy Suggestions */}
-          <Card className="border-neutral-200 shadow-xs bg-white">
+          <Card className="border-neutral-200 shadow-xs bg-white flex flex-col">
             <CardHeader className="border-b border-neutral-100 pb-4">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base font-semibold text-neutral-900">
                   Direct GoDaddy Suggestions
                 </CardTitle>
-                <Badge variant="muted" className="text-[11px] font-medium text-neutral-500">
-                  Raw API Output
-                </Badge>
+                <div className="flex items-center gap-1.5">
+                  {directIsFallback && (
+                    <Badge variant="muted" className="text-[10px] text-amber-700 bg-amber-50 border-amber-200">
+                      Fallback Mode
+                    </Badge>
+                  )}
+                  <Badge variant="muted" className="text-[11px] font-medium text-neutral-500">
+                    Raw API Output
+                  </Badge>
+                </div>
               </div>
               <CardDescription className="text-xs text-neutral-500 mt-1">
-                Raw keyword query, no brand context
+                Raw keyword query without risk filtering or brand validation
               </CardDescription>
             </CardHeader>
 
@@ -327,45 +369,56 @@ export function Dashboard() {
               )}
 
               {!loading && directItems && directItems.length > 0 && (
-                <div className="flex flex-col gap-2.5">
+                <div className="flex flex-col gap-3">
                   {directItems.map((item, idx) => (
                     <div
                       key={idx}
-                      className="p-3 rounded-lg border border-neutral-200/90 hover:border-neutral-300 bg-neutral-50/30 transition-colors flex items-center justify-between gap-3"
+                      className="p-3.5 rounded-lg border border-neutral-200/90 hover:border-neutral-300 bg-neutral-50/30 transition-colors flex flex-col gap-2"
                     >
-                      <div className="flex flex-col gap-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
+                      {/* Top Bar: Domain and Price/Action */}
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2 min-w-0">
                           <span className="font-bold text-sm sm:text-base text-neutral-900 truncate">
                             {item.domain}
                           </span>
-                          <Badge variant="muted" className="text-[10px] py-0 px-1.5 font-normal">
-                            Unscored
-                          </Badge>
                         </div>
-                        <div className="flex items-center gap-2 text-xs text-neutral-500">
-                          {item.originalPrice && (
-                            <span className="line-through text-neutral-400">
-                              {item.originalPrice}
+
+                        <div className="flex items-center gap-3 shrink-0">
+                          <div className="flex items-baseline gap-1.5 text-xs text-right">
+                            {item.originalPrice && (
+                              <span className="line-through text-neutral-400 text-[11px]">
+                                {item.originalPrice}
+                              </span>
+                            )}
+                            <span className="font-bold text-neutral-900 text-sm">
+                              {item.price || "$11.99"}
                             </span>
-                          )}
-                          <span className="font-semibold text-neutral-800">
-                            {item.price || "$11.99"}
-                          </span>
-                          <span className="text-[11px] text-neutral-400">/ 1st yr</span>
+                            <span className="text-[10px] text-neutral-400">/yr</span>
+                          </div>
+
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            className="h-8 w-8 shrink-0 text-neutral-700 hover:text-neutral-900 border-neutral-300 hover:bg-neutral-100 cursor-pointer"
+                            title="Add domain"
+                            onClick={() =>
+                              showToast(`Would proceed to registration flow for ${item.domain}`)
+                            }
+                          >
+                            <Plus className="w-4 h-4" />
+                          </Button>
                         </div>
                       </div>
 
-                      <Button
-                        size="icon"
-                        variant="outline"
-                        className="h-8 w-8 shrink-0 text-neutral-700 hover:text-neutral-900 border-neutral-300 hover:bg-neutral-100 cursor-pointer"
-                        title="Add domain"
-                        onClick={() =>
-                          showToast(`Would proceed to registration flow for ${item.domain}`)
-                        }
-                      >
-                        <Plus className="w-4 h-4" />
-                      </Button>
+                      {/* Bottom Row: Unscored Status */}
+                      <div className="flex items-center gap-2 text-xs text-neutral-500 pt-0.5">
+                        <Badge variant="muted" className="text-[10px] py-0 px-1.5 font-normal">
+                          Unscored
+                        </Badge>
+                        <span className="text-[11px] text-neutral-400">
+                          Raw keyword match without risk filtering
+                        </span>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -374,27 +427,44 @@ export function Dashboard() {
           </Card>
 
           {/* RIGHT CARD: Context-Aware Recommendations */}
-          <Card className="border-neutral-200 shadow-xs bg-white">
+          <Card className="border-neutral-200 shadow-xs bg-white flex flex-col">
             <CardHeader className="border-b border-neutral-100 pb-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-emerald-600" />
                   <CardTitle className="text-base font-semibold text-neutral-900">
                     Context-Aware Recommendations
                   </CardTitle>
                 </div>
-                <Badge variant="lowRisk" className="text-[11px] font-medium">
-                  Enriched & Scored
-                </Badge>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {highRiskFilteredCount > 0 && (
+                    <Badge variant="highRisk" className="text-[10px] py-0.5 px-2 flex items-center gap-1 font-medium bg-red-50 text-red-700 border-red-200">
+                      <ShieldCheck className="w-3 h-3 text-red-600" />
+                      {highRiskFilteredCount} High-Risk Scam Filtered
+                    </Badge>
+                  )}
+                  {contextIsFallback && (
+                    <Badge variant="muted" className="text-[10px] text-amber-700 bg-amber-50 border-amber-200">
+                      Fallback Mode
+                    </Badge>
+                  )}
+                  <Badge variant="lowRisk" className="text-[11px] font-medium">
+                    Risk-Scored & Verified
+                  </Badge>
+                </div>
               </div>
               <CardDescription className="text-xs text-neutral-500 mt-1">
-                Enriched with brand context + relevance/risk scoring
+                {!brand.trim()
+                  ? "Category intent query: high-risk scam patterns and abusive TLDs filtered out"
+                  : "Enriched with brand context + relevance/risk scoring"}
               </CardDescription>
 
               {/* Show enriched keyword phrases if available */}
               {enrichedPhrases.length > 0 && (
                 <div className="mt-2.5 pt-2.5 border-t border-neutral-100 flex flex-wrap items-center gap-1.5 text-xs">
-                  <span className="text-neutral-500 font-medium">Enriched queries:</span>
+                  <span className="text-neutral-500 font-medium">
+                    {!brand.trim() ? "Curated category queries:" : "Enriched queries:"}
+                  </span>
                   {enrichedPhrases.map((phrase, i) => (
                     <span
                       key={i}
@@ -449,74 +519,75 @@ export function Dashboard() {
               )}
 
               {!loading && contextItems && contextItems.length > 0 && (
-                <div className="flex flex-col gap-2.5">
+                <div className="flex flex-col gap-3">
                   {contextItems.map((item, idx) => (
                     <div
                       key={idx}
-                      className="p-3 rounded-lg border border-neutral-200/90 hover:border-neutral-300 bg-neutral-50/20 transition-colors flex items-center justify-between gap-3"
+                      className="p-3.5 rounded-lg border border-neutral-200/90 hover:border-neutral-300 bg-neutral-50/20 transition-colors flex flex-col gap-2"
                     >
-                      <div className="flex flex-col gap-1.5 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
+                      {/* Tier 1: Domain Name (Left) + Price & Action Button (Right) */}
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2 min-w-0">
                           <span className="font-bold text-sm sm:text-base text-neutral-900 truncate">
                             {item.domain}
                           </span>
-
-                          {/* Relevance Badge */}
-                          <Badge
-                            variant={getRelevanceVariant(item.relevanceScore)}
-                            className="text-[11px] py-0 px-1.5"
-                          >
-                            Relevance: {item.relevanceScore}
-                          </Badge>
-
-                          {/* Risk Badge */}
-                          <Badge
-                            variant={getRiskVariant(item.riskLevel)}
-                            className="text-[11px] py-0 px-1.5"
-                          >
-                            Risk: {item.riskLevel}
-                          </Badge>
-
                           {item.available && (
-                            <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600 font-medium">
+                            <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200/70 px-2 py-0.5 rounded-md font-medium shrink-0">
                               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                               Available
                             </span>
                           )}
                         </div>
 
-                        <div className="flex items-center gap-3 text-xs text-neutral-500">
-                          <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-3 shrink-0">
+                          <div className="flex items-baseline gap-1.5 text-xs text-right">
                             {item.renewalPrice && item.price && item.renewalPrice !== item.price && (
-                              <span className="line-through text-neutral-400">
+                              <span className="line-through text-neutral-400 text-[11px]">
                                 {item.renewalPrice}
                               </span>
                             )}
-                            <span className="font-semibold text-neutral-800">
-                              {item.price || "$11.99"}
+                            <span className="font-bold text-neutral-900 text-sm">
+                              {item.price || "$9.79"}
                             </span>
-                            <span className="text-[11px] text-neutral-400">/ 1st yr</span>
+                            <span className="text-[10px] text-neutral-400">/yr</span>
                           </div>
 
-                          {item.reason && (
-                            <span className="text-[11px] text-neutral-500 truncate max-w-[220px] sm:max-w-[320px]">
-                              • {item.reason}
-                            </span>
-                          )}
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            className="h-8 w-8 shrink-0 text-neutral-700 hover:text-neutral-900 border-neutral-300 hover:bg-neutral-100 cursor-pointer"
+                            title="Add domain"
+                            onClick={() =>
+                              showToast(`Would proceed to registration flow for ${item.domain}`)
+                            }
+                          >
+                            <Plus className="w-4 h-4" />
+                          </Button>
                         </div>
                       </div>
 
-                      <Button
-                        size="icon"
-                        variant="outline"
-                        className="h-8 w-8 shrink-0 text-neutral-700 hover:text-neutral-900 border-neutral-300 hover:bg-neutral-100 cursor-pointer"
-                        title="Add domain"
-                        onClick={() =>
-                          showToast(`Would proceed to registration flow for ${item.domain}`)
-                        }
-                      >
-                        <Plus className="w-4 h-4" />
-                      </Button>
+                      {/* Tier 2: Relevance & Risk Badges */}
+                      <div className="flex items-center gap-2">
+                        <Badge
+                          variant={getRelevanceVariant(item.relevanceScore)}
+                          className="text-[11px] py-0.5 px-2 font-medium"
+                        >
+                          Relevance: {item.relevanceScore}/100
+                        </Badge>
+                        <Badge
+                          variant={getRiskVariant(item.riskLevel)}
+                          className="text-[11px] py-0.5 px-2 font-medium"
+                        >
+                          Risk: {item.riskLevel}
+                        </Badge>
+                      </div>
+
+                      {/* Tier 3: Explanatory Rationale */}
+                      {item.reason && (
+                        <div className="text-[11px] text-neutral-600 leading-normal pl-2.5 py-0.5 border-l-2 border-neutral-200/90 bg-neutral-50/50 rounded-r">
+                          {item.reason}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -536,10 +607,10 @@ export function Dashboard() {
                 <span className="w-5 h-5 rounded-full bg-neutral-900 text-white inline-flex items-center justify-center text-[10px]">
                   1
                 </span>
-                Context Enrichment
+                Context & Intent Enrichment
               </span>
               <p>
-                Takes brand name & business intent to generate coherent multi-word search queries and direct candidate suggestions via Gemini.
+                Takes brand name or business intent to curate coherent search queries and professional candidates instead of unrefined keywords.
               </p>
             </div>
 
@@ -551,7 +622,7 @@ export function Dashboard() {
                 Deterministic Risk Scoring
               </span>
               <p>
-                Flags scam-pattern keywords (e.g. &ldquo;vault&rdquo;, &ldquo;pledge&rdquo;), typosquats against major financial brands via Levenshtein distance, and penalizes high-abuse TLDs.
+                Flags urgency/scam keywords (e.g. &ldquo;vault&rdquo;, &ldquo;pledge&rdquo;), typosquats against major financial brands, and penalizes high-abuse TLDs.
               </p>
             </div>
 
@@ -560,10 +631,10 @@ export function Dashboard() {
                 <span className="w-5 h-5 rounded-full bg-neutral-900 text-white inline-flex items-center justify-center text-[10px]">
                   3
                 </span>
-                Live GoDaddy Verification
+                Active Scam Filtering
               </span>
               <p>
-                Filters out high-risk candidates, sorts top-relevance recommendations, and verifies live registry availability + real GoDaddy pricing.
+                Actively strips out high-risk candidates before confirming live GoDaddy availability, promoting credible alternatives even without a brand name.
               </p>
             </div>
           </div>

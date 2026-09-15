@@ -45,21 +45,26 @@ export interface ContextDomainItem {
 
 export interface DirectSuggestionsRequest {
   query: string;
+  mock?: boolean;
 }
 
 export interface DirectSuggestionsResponse {
   items: DirectDomainItem[];
+  fallback?: boolean;
   error?: string;
 }
 
 export interface ContextSuggestionsRequest {
   brand: string;
   query: string;
+  mock?: boolean;
 }
 
 export interface ContextSuggestionsResponse {
   items: ContextDomainItem[];
   enrichedPhrases?: string[];
   generatedCount?: number;
+  highRiskFilteredCount?: number;
+  fallback?: boolean;
   error?: string;
 }

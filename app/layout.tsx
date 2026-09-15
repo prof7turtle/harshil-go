@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Domain Intelligence Layer — Context-Aware Suggestions",
+  title: "Domain Intelligence Layer: Context-Aware Suggestions",
   description:
-    "GoDaddy Airo Prototype — Contrast between raw keyword suggestions and context-aware, risk-scored domain recommendations.",
+    "GoDaddy Airo Prototype: Contrast between raw keyword suggestions and context-aware, risk-scored domain recommendations.",
 };
 
 export default function RootLayout({
